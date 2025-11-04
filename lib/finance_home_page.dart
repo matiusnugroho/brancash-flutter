@@ -1,27 +1,12 @@
-import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'wallet_page.dart';
+
+import 'data/database_helper.dart';
 import 'home_content.dart';
-
-// Model sederhana untuk data aktivitas
-class Activity {
-  final String icon;
-  final String title;
-  final String category;
-  final double amount;
-  final Color color;
-  final bool isIncome;
-
-  Activity({
-    required this.icon,
-    required this.title,
-    required this.category,
-    required this.amount,
-    required this.color,
-    this.isIncome = false,
-  });
-}
+import 'models/transaction_entry.dart';
+import 'wallet_page.dart';
+import 'widgets/add_transaction_sheet.dart';
 
 class FinanceHomePage extends StatefulWidget {
   const FinanceHomePage({super.key});
@@ -31,25 +16,78 @@ class FinanceHomePage extends StatefulWidget {
 }
 
 class FinanceHomePageState extends State<FinanceHomePage> {
+  final DatabaseHelper _databaseHelper = DatabaseHelper.instance;
+  final NumberFormat _currencyFormatter =
+      NumberFormat.currency(locale: 'id_ID', symbol: 'Rp ', decimalDigits: 0);
+
   int _selectedIndex = 0;
+  bool _isLoading = true;
 
-  // Data dummy untuk daftar aktivitas
-  final List<Activity> _activities = [
-    Activity(icon: '🐔', title: 'Ayam Geprek', category: 'Makan', amount: 75000, color: const Color(0xFFD27A62)),
-    Activity(icon: '⛽', title: 'Bensin', category: 'Transportasi', amount: 41000, color: const Color(0xFFE55A5A)),
-    Activity(icon: '💸', title: 'Samsul Bayar', category: 'Hutang', amount: 223000, color: const Color(0xFFFFC107)),
-    Activity(icon: '💰', title: 'Gaji Bulan', category: 'Pendapatan', amount: 229000, color: const Color(0xFFFFD54F), isIncome: true),
-    Activity(icon: '☕', title: 'Kopi Kenangan', category: 'Makan', amount: 22000, color: const Color(0xFFD27A62)),
-  ];
+  List<TransactionEntry> _recentTransactions = const [];
+  late List<_DailySummary> _weeklySummaries;
+  double _totalIncome = 0;
+  double _totalExpense = 0;
 
-  // Daftar widget untuk setiap halaman/tab
+  double get _balance => _totalIncome - _totalExpense;
+
   static final List<Widget> _pages = <Widget>[
-    const HomeContent(), // Menggunakan widget dari file baru
-    const WalletPage(),   // Halaman Wallet yang baru dibuat
-    const Center(child: Text('Halaman Tambah', style: TextStyle(color: Colors.white, fontSize: 24))), // Placeholder
-    const Center(child: Text('Halaman Insights', style: TextStyle(color: Colors.white, fontSize: 24))), // Placeholder
-    const Center(child: Text('Halaman Settings', style: TextStyle(color: Colors.white, fontSize: 24))), // Placeholder
+    const HomeContent(),
+    const WalletPage(),
+    const SizedBox.shrink(),
+    const Center(
+      child: Text('Halaman Insights', style: TextStyle(color: Colors.white, fontSize: 24)),
+    ),
+    const Center(
+      child: Text('Halaman Settings', style: TextStyle(color: Colors.white, fontSize: 24)),
+    ),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeData();
+  }
+
+  Future<void> _initializeData() async {
+    setState(() => _isLoading = true);
+
+    final totals = await _databaseHelper.getTotals();
+    final recentTransactions = await _databaseHelper.getRecentTransactions();
+
+    final today = DateTime.now();
+    final startOfToday = DateTime(today.year, today.month, today.day);
+    final startRange = startOfToday.subtract(const Duration(days: 6));
+    final endRange = startOfToday.add(const Duration(hours: 23, minutes: 59, seconds: 59));
+
+    final transactionsInRange =
+        await _databaseHelper.getTransactionsBetween(startRange, endRange);
+
+    final summaries = <DateTime, _DailySummary>{};
+    for (int i = 0; i < 7; i++) {
+      final date = startRange.add(Duration(days: i));
+      summaries[date] = _DailySummary(date: date);
+    }
+
+    for (final entry in transactionsInRange) {
+      final normalizedDate = DateTime(entry.date.year, entry.date.month, entry.date.day);
+      final summary = summaries[normalizedDate];
+      if (summary == null) continue;
+      if (entry.isIncome) {
+        summary.income += entry.amount;
+      } else {
+        summary.expense += entry.amount;
+      }
+    }
+
+    setState(() {
+      _totalIncome = totals[TransactionType.income] ?? 0;
+      _totalExpense = totals[TransactionType.expense] ?? 0;
+      _recentTransactions = recentTransactions;
+      _weeklySummaries = summaries.values.toList()
+        ..sort((a, b) => a.date.compareTo(b.date));
+      _isLoading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -76,15 +114,21 @@ class FinanceHomePageState extends State<FinanceHomePage> {
             ),
           ),
           const SizedBox(height: 5),
-          const Center(
+          Center(
             child: Text(
-              'Rp 365,500',
-              style: TextStyle(
+              _currencyFormatter.format(_balance),
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 36,
                 fontWeight: FontWeight.bold,
               ),
             ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Total pemasukan ${_currencyFormatter.format(_totalIncome)} · '
+            'Total pengeluaran ${_currencyFormatter.format(_totalExpense)}',
+            style: const TextStyle(color: Colors.white70, fontSize: 12),
           ),
           const SizedBox(height: 30),
           buildBarChart(),
@@ -95,40 +139,59 @@ class FinanceHomePageState extends State<FinanceHomePage> {
       ),
     );
   }
-  
-  // Widget baru untuk tombol header agar bisa ditumpuk di atas
+
   Widget buildHeaderButtons() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(horizontal: 20.0, vertical: 20.0),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 20.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [Icon(Icons.arrow_back, color: Colors.white, size: 28), Icon(Icons.add, color: Colors.white, size: 28)],
+        children: [
+          IconButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 28),
+          ),
+          IconButton(
+            onPressed: _showAddTransactionSheet,
+            icon: const Icon(Icons.add, color: Colors.white, size: 28),
+          ),
+        ],
       ),
     );
   }
 
-  // Widget untuk membangun grafik batang menggunakan fl_chart
   Widget buildBarChart() {
+    if (_isLoading) {
+      return const SizedBox(
+        height: 140,
+        child: Center(child: CircularProgressIndicator(color: Colors.white)),
+      );
+    }
+
+    final maxTotal = _weeklySummaries.isEmpty
+        ? 0
+        : _weeklySummaries
+            .map((summary) => summary.income + summary.expense)
+            .fold<double>(0, (previous, element) => element > previous ? element : previous);
+    final maxY = maxTotal == 0 ? 500000 : maxTotal * 1.2;
+
     return SizedBox(
-      height: 120,
+      height: 160,
       child: BarChart(
         BarChartData(
-          maxY: 6, // PERUBAHAN: Menyesuaikan nilai Y maksimal
+          maxY: maxY,
           borderData: FlBorderData(show: false),
           gridData: const FlGridData(show: false),
           titlesData: FlTitlesData(
             leftTitles: AxisTitles(
               sideTitles: SideTitles(
                 showTitles: true,
-                reservedSize: 30,
-                interval: 2, // Menampilkan label setiap interval 2
+                reservedSize: 48,
                 getTitlesWidget: (value, meta) {
-                  // PERUBAHAN: Membuat label Y lebih linear
-                  if (value == 0) return const Text('\$0', style: TextStyle(color: Colors.white70, fontSize: 12));
-                  if (value == 2) return const Text('\$20', style: TextStyle(color: Colors.white70, fontSize: 12));
-                  if (value == 4) return const Text('\$40', style: TextStyle(color: Colors.white70, fontSize: 12));
-                  if (value == 6) return const Text('\$60', style: TextStyle(color: Colors.white70, fontSize: 12));
-                  return Container();
+                  if (value == 0) {
+                    return const Text('0', style: TextStyle(color: Colors.white70, fontSize: 12));
+                  }
+                  final formatted = _currencyFormatter.format(value).replaceAll('Rp ', '');
+                  return Text(formatted, style: const TextStyle(color: Colors.white70, fontSize: 12));
                 },
               ),
             ),
@@ -136,56 +199,41 @@ class FinanceHomePageState extends State<FinanceHomePage> {
               sideTitles: SideTitles(
                 showTitles: true,
                 getTitlesWidget: (value, meta) {
-                  const style = TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold);
-                  String text;
-                  switch (value.toInt()) {
-                    case 0: text = 'Mar'; break;
-                    case 1: text = 'Apr'; break;
-                    case 2: text = 'May'; break;
-                    case 3: text = 'Jui'; break;
-                    case 4: text = 'Aug'; break;
-                    default: return Container();
+                  if (value < 0 || value >= _weeklySummaries.length) {
+                    return const SizedBox.shrink();
                   }
-                  return Text(text, style: style);
+                  final date = _weeklySummaries[value.toInt()].date;
+                  final text = DateFormat('E', 'id_ID').format(date);
+                  return Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12));
                 },
               ),
             ),
             topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
             rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
           ),
-          // Data untuk setiap batang
           barGroups: [
-            makeGroupData(0, 2, 0),    // Mar: Earned 2, Spent 0
-            makeGroupData(1, 3, 0),    // Apr: Earned 3, Spent 0
-            makeGroupData(2, 2, 1),    // May: Earned 2, Spent 1
-            makeGroupData(3, 2.5, 0),  // Jui: Earned 2.5, Spent 0
-            makeGroupData(4, 1, 3.5),  // Aug: Earned 1, Spent 3.5
+            for (int i = 0; i < _weeklySummaries.length; i++)
+              _makeGroupData(i, _weeklySummaries[i].income, _weeklySummaries[i].expense)
           ],
         ),
       ),
     );
   }
 
-  // PERUBAHAN UTAMA DI FUNGSI INI
-  // Fungsi helper untuk membuat data grup batang bertumpuk (stacked)
-  BarChartGroupData makeGroupData(int x, double earned, double spent) {
+  BarChartGroupData _makeGroupData(int x, double income, double expense) {
     const double width = 16;
-    const Color earnedColor = Colors.white;
-    const Color spentColor = Color(0xFFF44336);
+    const Color incomeColor = Colors.white;
+    const Color expenseColor = Color(0xFFF44336);
 
     return BarChartGroupData(
       x: x,
       barRods: [
-        // Hanya menggunakan SATU BarChartRodData
         BarChartRodData(
-          toY: earned + spent, // Tinggi total adalah penjumlahan earned dan spent
+          toY: income + expense,
           width: width,
-          // Gunakan rodStackItems untuk menumpuk data
           rodStackItems: [
-            // Bagian bawah untuk 'Earned'
-            BarChartRodStackItem(0, earned, earnedColor),
-            // Bagian atas untuk 'Spent', dimulai dari akhir 'Earned'
-            BarChartRodStackItem(earned, earned + spent, spentColor),
+            BarChartRodStackItem(0, income, incomeColor),
+            BarChartRodStackItem(income, income + expense, expenseColor),
           ],
           borderRadius: const BorderRadius.all(Radius.circular(4)),
         ),
@@ -197,9 +245,9 @@ class FinanceHomePageState extends State<FinanceHomePage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        buildLegendItem(Colors.white, 'Earned'),
+        buildLegendItem(Colors.white, 'Pemasukan'),
         const SizedBox(width: 20),
-        buildLegendItem(const Color(0xFFF44336), 'Spent'),
+        buildLegendItem(const Color(0xFFF44336), 'Pengeluaran'),
       ],
     );
   }
@@ -210,10 +258,7 @@ class FinanceHomePageState extends State<FinanceHomePage> {
         Container(
           width: 10,
           height: 10,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
         const SizedBox(width: 6),
         Text(text, style: const TextStyle(color: Colors.white, fontSize: 12)),
@@ -241,23 +286,29 @@ class FinanceHomePageState extends State<FinanceHomePage> {
             ),
           ),
           Expanded(
-            child: ListView.builder(
-              controller: scrollController,
-              padding: const EdgeInsets.fromLTRB(10.0, 0, 10.0, 20.0),
-              itemCount: _activities.length,
-              itemBuilder: (context, index) {
-                final activity = _activities[index];
-                return buildActivityItem(activity);
-              },
-            ),
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : _recentTransactions.isEmpty
+                    ? const Center(child: Text('Belum ada transaksi. Yuk tambah dulu!'))
+                    : ListView.builder(
+                        controller: scrollController,
+                        padding: const EdgeInsets.fromLTRB(10.0, 0, 10.0, 20.0),
+                        itemCount: _recentTransactions.length,
+                        itemBuilder: (context, index) {
+                          final transaction = _recentTransactions[index];
+                          return buildActivityItem(transaction);
+                        },
+                      ),
           ),
         ],
       ),
     );
   }
 
-  Widget buildActivityItem(Activity activity) {
-    final currencyFormatter = NumberFormat.decimalPattern('id_ID');
+  Widget buildActivityItem(TransactionEntry transaction) {
+    final currencyText = _currencyFormatter.format(transaction.amount);
+    final dateText = DateFormat('dd MMM yyyy', 'id_ID').format(transaction.date);
+
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -269,23 +320,33 @@ class FinanceHomePageState extends State<FinanceHomePage> {
             children: [
               CircleAvatar(
                 radius: 25,
-                backgroundColor: activity.color.withOpacity(0.2),
-                child: Text(activity.icon, style: const TextStyle(fontSize: 22)),
+                backgroundColor:
+                    (transaction.isIncome ? Colors.green : const Color(0xFFF44336)).withOpacity(0.15),
+                child: Text(
+                  transaction.isIncome ? '⬆️' : '⬇️',
+                  style: const TextStyle(fontSize: 20),
+                ),
               ),
               const SizedBox(width: 15),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(activity.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                    Text(activity.category, style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+                    Text(
+                      transaction.title,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    Text(
+                      '${transaction.category} · $dateText',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                    ),
                   ],
                 ),
               ),
               Text(
-                '${activity.isIncome ? '' : '- '}${currencyFormatter.format(activity.amount)}',
+                transaction.isIncome ? currencyText : '- $currencyText',
                 style: TextStyle(
-                  color: activity.isIncome ? Colors.green : const Color(0xFFF44336),
+                  color: transaction.isIncome ? Colors.green : const Color(0xFFF44336),
                   fontWeight: FontWeight.bold,
                   fontSize: 16,
                 ),
@@ -297,18 +358,15 @@ class FinanceHomePageState extends State<FinanceHomePage> {
     );
   }
 
-  Widget buildBottomNavigationBar() {
+  BottomNavigationBar buildBottomNavigationBar() {
     return BottomNavigationBar(
-      currentIndex: _selectedIndex > 1 ? _selectedIndex -1 : _selectedIndex,
+      currentIndex: _selectedIndex > 1 ? _selectedIndex - 1 : _selectedIndex,
       onTap: (index) {
-        // Jika tombol tengah (index 2) ditekan, jangan lakukan apa-apa (atau panggil aksi tambah)
         if (index == 2) {
-          // TODO: Tambahkan aksi untuk tombol tambah, misalnya menampilkan dialog.
-          print('Tombol Tambah ditekan!');
+          _showAddTransactionSheet();
           return;
         }
 
-        // Sesuaikan index untuk state karena item 'Tambah' tidak dihitung sebagai halaman
         final newIndex = index > 1 ? index + 1 : index;
         setState(() => _selectedIndex = newIndex);
       },
@@ -319,14 +377,32 @@ class FinanceHomePageState extends State<FinanceHomePage> {
       items: const [
         BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
         BottomNavigationBarItem(icon: Icon(Icons.account_balance_wallet_outlined), label: 'Wallet'),
-        // Tombol Tambah di tengah yang tidak akan mengubah halaman
-        BottomNavigationBarItem(
-          icon: Icon(Icons.add_circle, size: 36, color: Color(0xFF1976D2)),
-          label: '',
-        ),
+        BottomNavigationBarItem(icon: Icon(Icons.add_circle, size: 36, color: Color(0xFF1976D2)), label: ''),
         BottomNavigationBarItem(icon: Icon(Icons.insights), label: 'Insights'),
         BottomNavigationBarItem(icon: Icon(Icons.settings), label: 'Settings'),
       ],
     );
   }
+
+  Future<void> _showAddTransactionSheet() async {
+    final entry = await showModalBottomSheet<TransactionEntry>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => const AddTransactionSheet(),
+    );
+
+    if (entry != null) {
+      await _databaseHelper.insertTransaction(entry);
+      await _initializeData();
+    }
+  }
+}
+
+class _DailySummary {
+  _DailySummary({required this.date, this.income = 0, this.expense = 0});
+
+  final DateTime date;
+  double income;
+  double expense;
 }
