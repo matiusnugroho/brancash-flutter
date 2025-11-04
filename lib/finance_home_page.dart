@@ -167,12 +167,12 @@ class FinanceHomePageState extends State<FinanceHomePage> {
       );
     }
 
-    final maxTotal = _weeklySummaries.isEmpty
-        ? 0
+    final double maxTotal = _weeklySummaries.isEmpty
+        ? 0.0
         : _weeklySummaries
             .map((summary) => summary.income + summary.expense)
             .fold<double>(0, (previous, element) => element > previous ? element : previous);
-    final maxY = maxTotal == 0 ? 500000 : maxTotal * 1.2;
+    final double maxY = maxTotal == 0.0 ? 500000.0 : maxTotal * 1.2;
 
     return SizedBox(
       height: 160,
